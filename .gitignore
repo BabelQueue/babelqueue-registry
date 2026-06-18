@@ -1,0 +1,7 @@
+# Build output
+/bqschema
+/dist/
+
+# Go
+*.test
+*.out
