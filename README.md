@@ -78,6 +78,58 @@ bqschema export-asyncapi --registry examples/registry.json -o asyncapi.json
 - run: bqschema compat schemas/orders-created.json schemas/orders-created.json   # old vs PR's version
 ```
 
+## GitHub Action
+
+A packaged composite Action installs the CLI and runs it as a merge gate, so you don't
+have to wire up `go install` yourself. By default it runs `check` (registry
+self-validation); point `command` at any other subcommand and use `args` as an escape
+hatch for positional arguments (e.g. `compat`'s two schema files).
+
+```yaml
+# .github/workflows/schema-gate.yml
+name: Schema gate
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Validate the registry itself (every schema parses).
+      - uses: BabelQueue/babelqueue-registry@v0.2.0
+        with:
+          registry: registry.json
+
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Backward-compatibility gate: fails the PR on a breaking schema change.
+      # `compat` takes two positional schema files: <old> <new>.
+      - uses: BabelQueue/babelqueue-registry@v0.2.0
+        with:
+          command: compat
+          args: schemas/orders-created.json schemas/orders-created.json
+```
+
+### Action inputs
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `version` | `latest` | `bqschema` version to install (a release tag like `v0.1.0`, or `latest`). |
+| `command` | `check` | Subcommand: `check`, `validate`, `compat`, or `export-asyncapi`. |
+| `registry` | `registry.json` | Manifest path (passed to `check`/`validate`/`export-asyncapi`). |
+| `dir` | `.` | Working directory the CLI runs in. |
+| `args` | `""` | Extra args appended after the subcommand (e.g. `compat`'s `<old> <new>` files). |
+
+A non-zero exit (`1` = breaking change / validation failure, `2` = usage/IO error) fails
+the step and blocks the merge.
+
 ## What `compat` considers breaking
 
 | Change | Verdict |
