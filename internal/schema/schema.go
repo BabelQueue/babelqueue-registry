@@ -24,6 +24,15 @@ type Schema struct {
 	HasConst             bool
 	MinLength            *int     // string
 	Minimum              *float64 // integer|number
+
+	// GDPRSensitive marks a property as carrying personal/sensitive data
+	// ("x-gdpr-sensitive": true). It is a JSON-Schema extension keyword: validation
+	// ignores it entirely (it never makes a value valid or invalid), so a registry can
+	// declare sensitivity without changing how data is validated. GDPRCategory carries the
+	// optional free-form category form ("x-gdpr-sensitive": "email") for documentation; it is
+	// "" when the keyword was the boolean true. See internal/gdpr for the audit/mask tooling.
+	GDPRSensitive bool
+	GDPRCategory  string
 }
 
 // Parse decodes a (subset) JSON Schema document.
@@ -76,7 +85,52 @@ func fromMap(m map[string]any) *Schema {
 		v := min
 		s.Minimum = &v
 	}
+	// x-gdpr-sensitive: a recognised-but-validation-ignored extension keyword. Accept either
+	// the boolean true or a non-empty string category (e.g. "email"); any other shape — false,
+	// "", a number — leaves the property unmarked.
+	switch g := m["x-gdpr-sensitive"].(type) {
+	case bool:
+		s.GDPRSensitive = g
+	case string:
+		if g != "" {
+			s.GDPRSensitive = true
+			s.GDPRCategory = g
+		}
+	}
 	return s
+}
+
+// SensitivePath is one property marked x-gdpr-sensitive, located by its dotted path from the
+// schema root (array elements use the "field[]" segment the validator/compat use). Category is
+// the optional "x-gdpr-sensitive": "<category>" string, or "" when it was the boolean true.
+type SensitivePath struct {
+	Path     string
+	Category string
+}
+
+// SensitivePaths walks the schema and returns every property marked x-gdpr-sensitive, in sorted
+// path order. It descends into nested objects (dotted paths) and array item schemas ("field[]").
+// A mark on the root schema itself (path "") is reported as a path of "".
+func (s *Schema) SensitivePaths() []SensitivePath {
+	var out []SensitivePath
+	s.collectSensitive("", &out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func (s *Schema) collectSensitive(path string, out *[]SensitivePath) {
+	if s == nil {
+		return
+	}
+	if s.GDPRSensitive {
+		*out = append(*out, SensitivePath{Path: path, Category: s.GDPRCategory})
+	}
+	for name, sub := range s.Properties {
+		sub.collectSensitive(join(path, name), out)
+	}
+	if s.Items != nil {
+		s.Items.collectSensitive(path+"[]", out)
+	}
 }
 
 // Validate checks value against the schema and returns a sorted list of human-readable

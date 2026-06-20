@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["user_id", "email"],
+  "properties": {
+    "user_id": { "type": "integer", "minimum": 1 },
+    "email": { "type": "string", "minLength": 3, "x-gdpr-sensitive": "email" },
+    "phone": { "type": "string", "x-gdpr-sensitive": true },
+    "locale": { "type": "string" },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "full_name": { "type": "string", "x-gdpr-sensitive": true },
+        "tckn": { "type": "string", "x-gdpr-sensitive": "national_id" },
+        "marketing_opt_in": { "type": "boolean" }
+      }
+    },
+    "addresses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "line": { "type": "string", "x-gdpr-sensitive": true },
+          "country": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

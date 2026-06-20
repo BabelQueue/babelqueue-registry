@@ -18,6 +18,9 @@ Schemas live in your git repo as files:
 - **`export-asyncapi`** — generate an AsyncAPI 3.0 event catalog from the registry, so the
   same git-tracked schemas double as discoverable, tool-agnostic documentation.
 
+It also **serves** a Confluent-compatible read-mostly REST API (`serve`) and **governs PII** —
+declaring, auditing, and masking GDPR-sensitive fields (`gdpr`).
+
 Unlike Confluent Schema Registry, schemas aren't coupled to a broker — so there's no
 cold-start circular dependency, and it works identically across Redis, RabbitMQ, SQS,
 Kafka, Pulsar, and the rest.
@@ -71,6 +74,11 @@ bqschema export-asyncapi --registry examples/registry.json -o asyncapi.json
 
 # Serve a Confluent-compatible (read-mostly) REST API over the registry
 bqschema serve --registry examples/registry.json --addr :8081
+
+# Audit GDPR-sensitive (PII) fields across the registry
+bqschema gdpr --registry examples/registry.json                       # inventory
+bqschema gdpr --registry examples/registry.json --require             # CI gate: fail on un-annotated PII
+bqschema gdpr --registry examples/registry.json --mask examples/messages/user-registered.json
 ```
 
 ### In CI
@@ -136,6 +144,92 @@ the **new** schema and must still accept data valid under the **registered** sch
 - **Schema *types* other than JSON Schema** (no Avro/Protobuf), schema references, mode endpoints,
   and `?fetchMaxId` / `?normalize`-style query options.
 
+## GDPR sensitive fields
+
+A registry is the natural place to **declare** which message fields carry personal data, so PII
+sensitivity is **auditable** in CI and **maskable** for safe logging — long before any encryption
+runs. `bqschema` recognises a single JSON-Schema extension keyword and a `gdpr` subcommand over it.
+
+> **Scope:** the registry **declares and audits** sensitivity. Field-level runtime
+> **encryption / tokenisation is an SDK concern**, intentionally out of scope here — see
+> [SDK enforcement](#sdk-enforcement) below.
+
+### The `x-gdpr-sensitive` keyword
+
+Mark any property in a `data` schema with `x-gdpr-sensitive`:
+
+```jsonc
+{
+  "type": "object",
+  "required": ["user_id", "email"],
+  "properties": {
+    "user_id": { "type": "integer" },
+    "email":   { "type": "string", "x-gdpr-sensitive": "email" },   // optional category
+    "phone":   { "type": "string", "x-gdpr-sensitive": true },      // or just true
+    "profile": { "type": "object", "properties": {
+      "full_name": { "type": "string", "x-gdpr-sensitive": true }
+    }},
+    "addresses": { "type": "array", "items": { "type": "object", "properties": {
+      "line": { "type": "string", "x-gdpr-sensitive": true }
+    }}}
+  }
+}
+```
+
+- It is an **extension keyword**: it accepts either `true` (a boolean) or a non-empty **string
+  category** (e.g. `"email"`, `"national_id"`) for documentation. `false` and `""` leave a field
+  unmarked.
+- It is **ignored by validation** — like every unknown keyword, it never makes a value valid or
+  invalid. Adding it to an existing schema is **not** a breaking change (`compat` ignores it too),
+  so you can annotate PII without minting a new URN.
+- It works at any depth: nested objects (`profile.full_name`) and array items (`addresses[].line`).
+
+### `bqschema gdpr`
+
+```sh
+bqschema gdpr --registry registry.json [--require [--pattern <re>]] [--mask <message.json> [--urn <urn>]]
+```
+
+| Mode | What it does |
+| ---- | ------------ |
+| *(default)* **inventory** | For each URN, lists the sensitive field paths (incl. nested + array items) and prints a coverage summary `N URN(s), M sensitive field(s)`. Always exits `0`. |
+| `--require` | **CI gate.** Fails if any property whose **name** matches a PII pattern (`email`, `ssn`, `phone`, `tckn`/national-id, `iban`, `address`, …) is **not** marked `x-gdpr-sensitive` — catching PII someone forgot to annotate. Override the pattern with `--pattern <regexp>`. Exits `1` on a finding, `0` when clean. (Object/array *containers* whose name matches are not themselves flagged — annotation lives on their leaves.) |
+| `--mask <message.json>` | Prints a copy of the message with the sensitive fields **masked**, for safe logging or fixtures. A full **envelope** masks its `data` against the URN in `job`/`urn`; a **bare data object** masks itself against `--urn`. Exits `0`; exits `1` only when the URN has no registered schema. |
+
+Masking is leaf-aware: a sensitive **string** keeps its first character then `***`
+(`"alice@example.com"` → `"a***"`) so it stays distinguishable in a log; any other sensitive value
+(number, boolean, object, array) becomes `"***"`. Masking is **one-way** — it is for safe logging,
+**not** encryption. The same logic is a reusable library function (`internal/gdpr.Mask`).
+
+```sh
+# Inventory
+$ bqschema gdpr --registry examples/registry.json
+  urn:babel:orders:created: no sensitive fields
+  urn:babel:users:registered: 5 sensitive field(s)
+    - addresses[].line
+    - email (email)
+    - phone
+    - profile.full_name
+    - profile.tckn (national_id)
+2 URN(s), 5 sensitive field(s).
+```
+
+### AsyncAPI
+
+`x-gdpr-sensitive` is **carried through** into the generated AsyncAPI 3.0 catalog (the `data`
+schema is embedded verbatim as each message's payload), so the event catalog documents which
+fields are PII — usable by downstream tooling.
+
+### SDK enforcement
+
+The registry is the **declaration + audit** layer; it never touches message bytes at runtime. An
+**SDK** is where runtime crypto/masking hooks in: a producer/consumer reads the same
+`x-gdpr-sensitive` annotation (from the schema, or from the AsyncAPI catalog) to decide which `data`
+fields to **encrypt/tokenise on publish and decrypt on consume**. That keeps the wire envelope
+frozen (the ciphertext is still pure JSON in `data`) while the registry remains the single,
+git-tracked source of truth for *what* is sensitive. `bqschema gdpr --mask` is the registry-side,
+non-reversible equivalent used only for safe logging and fixtures.
+
 ## GitHub Action
 
 A packaged composite Action installs the CLI and runs it as a merge gate, so you don't
@@ -180,7 +274,7 @@ jobs:
 | Input | Default | Description |
 | ----- | ------- | ----------- |
 | `version` | `latest` | `bqschema` version to install (a release tag like `v0.1.0`, or `latest`). |
-| `command` | `check` | Subcommand: `check`, `validate`, `compat`, or `export-asyncapi`. |
+| `command` | `check` | Subcommand: `check`, `validate`, `compat`, `export-asyncapi`, or `gdpr`. |
 | `registry` | `registry.json` | Manifest path (passed to `check`/`validate`/`export-asyncapi`). |
 | `dir` | `.` | Working directory the CLI runs in. |
 | `args` | `""` | Extra args appended after the subcommand (e.g. `compat`'s `<old> <new>` files). |
@@ -222,8 +316,11 @@ A non-empty `compat` result is the signal to **version the URN, not mutate it**
 - **Confluent-compatible REST** (read-mostly) is available via `bqschema serve` — see
   [REST surface](#rest-surface-confluent-compatible). Registration/writes stay out of scope (the
   registry is git-managed).
-- **Deferred** (later phases): GDPR crypto-field masking, and an OpenTelemetry-derived
-  event-flow map.
+- **GDPR sensitive-field governance** — declare PII with `x-gdpr-sensitive`, audit it (`gdpr
+  --require`), and mask it for safe logging (`gdpr --mask`); see
+  [GDPR sensitive fields](#gdpr-sensitive-fields). Runtime field encryption stays an **SDK**
+  concern (the registry declares + audits; the SDK enforces).
+- **Deferred** (later phases): an OpenTelemetry-derived event-flow map.
 
 ## License
 

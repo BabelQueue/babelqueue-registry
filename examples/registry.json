@@ -5,6 +5,12 @@
       "schema": "schemas/orders-created.json",
       "owner": "orders",
       "status": "active"
+    },
+    {
+      "urn": "urn:babel:users:registered",
+      "schema": "schemas/users-registered.json",
+      "owner": "identity",
+      "status": "active"
     }
   ]
 }

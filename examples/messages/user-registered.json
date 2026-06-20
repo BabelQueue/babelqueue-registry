@@ -1,0 +1,26 @@
+{
+  "job": "urn:babel:users:registered",
+  "trace_id": "9c2a7b3f-4a1b-9c2a-e41d-000000000000",
+  "data": {
+    "user_id": 7781,
+    "email": "alice@example.com",
+    "phone": "+90 555 123 4567",
+    "locale": "tr-TR",
+    "profile": {
+      "full_name": "Alice Örnek",
+      "tckn": "12345678901",
+      "marketing_opt_in": true
+    },
+    "addresses": [
+      { "line": "Atatürk Cad. No:1", "country": "TR" }
+    ]
+  },
+  "meta": {
+    "id": "a1b2c3d4-e5f6-4789-90ab-cdef01234567",
+    "queue": "identity",
+    "lang": "go",
+    "schema_version": 1,
+    "created_at": 1749132727000
+  },
+  "attempts": 0
+}

@@ -207,3 +207,103 @@ func TestRunExport(t *testing.T) {
 		t.Fatalf("missing registry → exit 2, got %d", code)
 	}
 }
+
+// gdprRegistry writes a registry whose one URN has a schema with marked + unmarked fields and
+// returns the registry path.
+func gdprRegistry(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "schemas/u.json"), `{
+		"type":"object",
+		"required":["user_id","email"],
+		"properties":{
+			"user_id":{"type":"integer"},
+			"email":{"type":"string","x-gdpr-sensitive":"email"},
+			"phone":{"type":"string","x-gdpr-sensitive":true},
+			"locale":{"type":"string"},
+			"profile":{"type":"object","properties":{"full_name":{"type":"string","x-gdpr-sensitive":true}}}
+		}
+	}`)
+	reg := filepath.Join(dir, "registry.json")
+	write(t, reg, `{"schemas":[{"urn":"urn:babel:users:registered","schema":"schemas/u.json"}]}`)
+	return reg
+}
+
+func TestRunGDPR_InventoryAndRequire(t *testing.T) {
+	reg := gdprRegistry(t)
+
+	// Inventory mode → exit 0.
+	if code := runGDPR([]string{"--registry", reg}); code != 0 {
+		t.Fatalf("inventory should exit 0, got %d", code)
+	}
+	// --require passes (every PII-named field is marked) → exit 0.
+	if code := runGDPR([]string{"--registry", reg, "--require"}); code != 0 {
+		t.Fatalf("require on fully-annotated registry should exit 0, got %d", code)
+	}
+	// --require with a pattern that catches an unmarked scalar (locale) → exit 1.
+	if code := runGDPR([]string{"--registry", reg, "--require", "--pattern", "locale"}); code != 1 {
+		t.Fatalf("require should exit 1 when an unmarked PII-named field exists, got %d", code)
+	}
+	// An invalid pattern is a usage/IO error → exit 2.
+	if code := runGDPR([]string{"--registry", reg, "--require", "--pattern", "("}); code != 2 {
+		t.Fatalf("an invalid pattern should exit 2, got %d", code)
+	}
+	// A missing registry → exit 2.
+	if code := runGDPR([]string{"--registry", filepath.Join(t.TempDir(), "nope.json")}); code != 2 {
+		t.Fatalf("missing registry → exit 2, got %d", code)
+	}
+}
+
+func TestRunGDPR_RequireFailsOnUnannotated(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "schemas/u.json"),
+		`{"type":"object","properties":{"email":{"type":"string"}}}`) // email NOT marked
+	reg := filepath.Join(dir, "registry.json")
+	write(t, reg, `{"schemas":[{"urn":"u","schema":"schemas/u.json"}]}`)
+	if code := runGDPR([]string{"--registry", reg, "--require"}); code != 1 {
+		t.Fatalf("an unmarked PII field should fail --require with exit 1, got %d", code)
+	}
+}
+
+func TestRunGDPR_MaskEnvelope(t *testing.T) {
+	reg := gdprRegistry(t)
+	dir := t.TempDir()
+	env := filepath.Join(dir, "env.json")
+	write(t, env, `{"job":"urn:babel:users:registered","data":{"user_id":7,"email":"alice@x.io","locale":"tr"}}`)
+	if code := runGDPR([]string{"--registry", reg, "--mask", env}); code != 0 {
+		t.Fatalf("mask of a valid envelope should exit 0, got %d", code)
+	}
+
+	// A bare data object needs --urn.
+	bare := filepath.Join(dir, "bare.json")
+	write(t, bare, `{"user_id":7,"email":"alice@x.io"}`)
+	if code := runGDPR([]string{"--registry", reg, "--mask", bare, "--urn", "urn:babel:users:registered"}); code != 0 {
+		t.Fatalf("mask of a bare object with --urn should exit 0, got %d", code)
+	}
+	// Bare object with no --urn and no data field → usage error.
+	if code := runGDPR([]string{"--registry", reg, "--mask", bare}); code != 2 {
+		t.Fatalf("mask without a URN should exit 2, got %d", code)
+	}
+}
+
+func TestRunGDPR_MaskErrors(t *testing.T) {
+	reg := gdprRegistry(t)
+	dir := t.TempDir()
+
+	// Missing message file → IO error.
+	if code := runGDPR([]string{"--registry", reg, "--mask", filepath.Join(dir, "nope.json")}); code != 2 {
+		t.Fatalf("missing message → exit 2, got %d", code)
+	}
+	// Invalid JSON → usage error.
+	bad := filepath.Join(dir, "bad.json")
+	write(t, bad, `not json`)
+	if code := runGDPR([]string{"--registry", reg, "--mask", bad}); code != 2 {
+		t.Fatalf("invalid message JSON → exit 2, got %d", code)
+	}
+	// Envelope whose URN has no registered schema → exit 1.
+	unknown := filepath.Join(dir, "unknown.json")
+	write(t, unknown, `{"job":"urn:babel:unknown","data":{"x":1}}`)
+	if code := runGDPR([]string{"--registry", reg, "--mask", unknown}); code != 1 {
+		t.Fatalf("mask against an unregistered URN should exit 1, got %d", code)
+	}
+}
