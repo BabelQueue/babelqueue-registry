@@ -68,6 +68,9 @@ bqschema check --registry examples/registry.json
 
 # Generate an AsyncAPI 3.0 event catalog from the registry
 bqschema export-asyncapi --registry examples/registry.json -o asyncapi.json
+
+# Serve a Confluent-compatible (read-mostly) REST API over the registry
+bqschema serve --registry examples/registry.json --addr :8081
 ```
 
 ### In CI
@@ -77,6 +80,61 @@ bqschema export-asyncapi --registry examples/registry.json -o asyncapi.json
 - run: bqschema check --registry registry.json
 - run: bqschema compat schemas/orders-created.json schemas/orders-created.json   # old vs PR's version
 ```
+
+## REST surface (Confluent-compatible)
+
+`bqschema serve` exposes a **subset of the [Confluent Schema Registry REST API](https://docs.confluent.io/platform/current/schema-registry/develop/api.html)**
+over the **same git-tracked registry** — so existing Schema-Registry tooling can introspect a
+BabelQueue registry **without a broker, a database, or a write path**. It is **read-mostly**: it
+serves what's in the files and never writes back (the registry is managed in git, not over REST).
+
+```sh
+bqschema serve --registry registry.json --addr :8081
+# flags: --addr (default :8081), --compatibility (default BACKWARD, the level /config reports)
+```
+
+Responses use the `application/vnd.schemaregistry.v1+json` content type, and errors use Confluent's
+`{ "error_code": <int>, "message": <string> }` body.
+
+### Subject ↔ URN mapping
+
+- **One URN = one Confluent "subject"**, named by the **URN verbatim** (e.g. the subject for
+  `urn:babel:orders:created` *is* `urn:babel:orders:created`). When putting a subject in a URL,
+  percent-encode it as usual for a path segment.
+- The file registry holds **exactly one schema per URN**, so **every subject has exactly one
+  version — version `1`**, and `latest` resolves to it.
+- **Schema ids** are assigned **deterministically** (1-based, in lexical URN order) when the
+  server loads the registry, so an id is stable for a given registry file and
+  `GET /schemas/ids/{id}` is well-defined.
+- There are **no per-subject compatibility overrides**: `/config` and `/config/{subject}` both
+  report the single registry-wide level (`--compatibility`, default `BACKWARD`).
+
+### Endpoints implemented
+
+| Method & path | Returns |
+| ------------- | ------- |
+| `GET /subjects` | the subject names (the registry's URNs) |
+| `GET /subjects/{subject}/versions` | `[1]` (the only version) |
+| `GET /subjects/{subject}/versions/{version}` (and `/latest`) | `{ subject, version, id, schema }` — `schema` is the JSON Schema as a string |
+| `GET /schemas/ids/{id}` | `{ schema }` for the stable id |
+| `POST /compatibility/subjects/{subject}/versions/{version}` | `{ "is_compatible": bool }` — the posted candidate (Confluent's `{"schema":"…"}` body) checked against the registered schema via the **same `compat` engine** the CLI uses |
+| `GET /config` | `{ "compatibilityLevel": "<level>" }` (registry-wide) |
+| `GET /config/{subject}` | the same level for a known subject |
+
+Compatibility direction is **`BACKWARD`** (Confluent's default): the posted candidate is treated as
+the **new** schema and must still accept data valid under the **registered** schema — exactly the
+`compat` rule in [the table below](#what-compat-considers-breaking).
+
+### Out of scope (deferred / by design)
+
+- **Registration / writes** — `POST /subjects/{subject}/versions`, `PUT /config`, deletes. The
+  registry is **git-managed**: you add a schema by committing a file, not by writing over REST. The
+  server never mutates the file store, keeping it git-native.
+- **Multiple versions per subject** — the file store is one-schema-per-URN by design; versioning a
+  message means [**minting a new URN**](#what-compat-considers-breaking), not stacking versions
+  under one subject.
+- **Schema *types* other than JSON Schema** (no Avro/Protobuf), schema references, mode endpoints,
+  and `?fetchMaxId` / `?normalize`-style query options.
 
 ## GitHub Action
 
@@ -161,8 +219,11 @@ A non-empty `compat` result is the signal to **version the URN, not mutate it**
 - **Zero dependencies** (Go stdlib only), in the spirit of BabelQueue's GR-7.
 - **Optional and SDK-independent** — no BabelQueue SDK depends on this; adopt it if you want
   the governance gate. The envelope is untouched (`schema_version: 1`).
-- **Deferred** (later phases): a Confluent-compatible REST API, GDPR crypto-field masking,
-  and an OpenTelemetry-derived event-flow map.
+- **Confluent-compatible REST** (read-mostly) is available via `bqschema serve` — see
+  [REST surface](#rest-surface-confluent-compatible). Registration/writes stay out of scope (the
+  registry is git-managed).
+- **Deferred** (later phases): GDPR crypto-field masking, and an OpenTelemetry-derived
+  event-flow map.
 
 ## License
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +134,46 @@ func TestRunCheck_Errors(t *testing.T) {
 		t.Fatalf("registry with a missing schema → exit 1, got %d", code)
 	}
 	if code := runCheck([]string{"--registry", filepath.Join(dir, "nope.json")}); code != 2 {
+		t.Fatalf("missing registry → exit 2, got %d", code)
+	}
+}
+
+func TestRunServe(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "schemas/o.json"),
+		`{"type":"object","properties":{"order_id":{"type":"integer"}}}`)
+	reg := filepath.Join(dir, "registry.json")
+	write(t, reg, `{"schemas":[{"urn":"urn:babel:orders:created","schema":"schemas/o.json"}]}`)
+
+	// Substitute the listen seam so runServe does not block; capture what it was handed.
+	orig := listenAndServe
+	t.Cleanup(func() { listenAndServe = orig })
+
+	var gotAddr string
+	var gotHandler http.Handler
+	listenAndServe = func(addr string, h http.Handler) error {
+		gotAddr = addr
+		gotHandler = h
+		return nil // simulate a clean shutdown so runServe returns 0.
+	}
+	if code := runServe([]string{"--registry", reg, "--addr", "127.0.0.1:0"}); code != 0 {
+		t.Fatalf("serve on a valid registry should exit 0, got %d", code)
+	}
+	if gotAddr != "127.0.0.1:0" {
+		t.Fatalf("addr passed to listener = %q, want 127.0.0.1:0", gotAddr)
+	}
+	if gotHandler == nil {
+		t.Fatal("serve did not hand a handler to the listener")
+	}
+
+	// A bind/serve failure surfaces as an IO error (exit 2).
+	listenAndServe = func(string, http.Handler) error { return errors.New("bind failed") }
+	if code := runServe([]string{"--registry", reg}); code != 2 {
+		t.Fatalf("a listen failure should exit 2, got %d", code)
+	}
+
+	// A missing registry never reaches the listener — exit 2.
+	if code := runServe([]string{"--registry", filepath.Join(dir, "nope.json")}); code != 2 {
 		t.Fatalf("missing registry → exit 2, got %d", code)
 	}
 }

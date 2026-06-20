@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/babelqueue/babelqueue-registry/internal/asyncapi"
 	"github.com/babelqueue/babelqueue-registry/internal/compat"
 	"github.com/babelqueue/babelqueue-registry/internal/registry"
+	"github.com/babelqueue/babelqueue-registry/internal/restapi"
 	"github.com/babelqueue/babelqueue-registry/internal/schema"
 )
 
@@ -23,6 +25,7 @@ Usage:
   bqschema compat   <old-schema.json> <new-schema.json>            check backward-compatibility (exit 1 on a breaking change)
   bqschema check    --registry <registry.json>                     validate the registry itself (every schema parses)
   bqschema export-asyncapi --registry <registry.json> [-o out.json] emit an AsyncAPI 3.0 event catalog from the registry
+  bqschema serve    --registry <registry.json> [--addr :8081]      serve a Confluent-compatible (read-mostly) REST API over the registry
 
 Schemas are draft-07 JSON Schema (subset) for the envelope's "data" block.`
 
@@ -40,6 +43,8 @@ func main() {
 		os.Exit(runCheck(os.Args[2:]))
 	case "export-asyncapi":
 		os.Exit(runExport(os.Args[2:]))
+	case "serve":
+		os.Exit(runServe(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Println(usage)
 	default:
@@ -186,6 +191,33 @@ func runExport(args []string) int {
 		return fail("write %s: %v", *out, err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (%d URN(s))\n", *out, len(r.URNs()))
+	return 0
+}
+
+// listenAndServe is the seam runServe binds through; production uses http.ListenAndServe, tests
+// substitute a non-blocking stub. It normally only returns on error (it blocks while serving).
+var listenAndServe = http.ListenAndServe
+
+func runServe(args []string) int {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	reg := fs.String("registry", "registry.json", "path to the registry manifest")
+	addr := fs.String("addr", ":8081", "address to listen on (host:port)")
+	level := fs.String("compatibility", "BACKWARD", "compatibility level reported by /config")
+	_ = fs.Parse(args)
+
+	r, err := registry.Load(*reg)
+	if err != nil {
+		return fail("%v", err)
+	}
+	srv := restapi.New(r, *level)
+
+	fmt.Fprintf(os.Stderr, "bqschema serve: Confluent-compatible REST on %s (%d subject(s), compatibility=%s)\n",
+		*addr, len(r.URNs()), *level)
+	// listenAndServe only returns on error (it blocks serving otherwise), so any return here is a
+	// failure to bind/serve — surface it as an IO error (exit 2), consistent with the other commands.
+	if err := listenAndServe(*addr, srv.Handler()); err != nil {
+		return fail("serve: %v", err)
+	}
 	return 0
 }
 
