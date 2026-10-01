@@ -188,3 +188,34 @@ func TestValidate_ScalarTypes(t *testing.T) {
 		}
 	}
 }
+
+// Cases mirror conformance manifest.json `payload_schema_unicode` (ADR-0024, GR-5): the
+// registry does not vendor the conformance suite, so they are copied here. minLength counts
+// Unicode code points — not UTF-8 bytes, not UTF-16 code units, not grapheme clusters.
+func TestValidate_MinLengthCountsCodePoints(t *testing.T) {
+	s := parse(t, `{
+		"type":"object",
+		"properties":{"min3":{"type":"string","minLength":3},"min2":{"type":"string","minLength":2}},
+		"additionalProperties":false
+	}`)
+	cases := []struct {
+		name  string
+		data  map[string]any
+		valid bool
+	}{
+		{"ascii-3cp-min3", map[string]any{"min3": "abc"}, true},
+		{"turkish-2cp-min3", map[string]any{"min3": "ğü"}, false},
+		{"turkish-3cp-min3-boundary", map[string]any{"min3": "ğüş"}, true},
+		{"emoji-1cp-min2", map[string]any{"min2": "😀"}, false},
+		{"emoji-plus-ascii-2cp-min3", map[string]any{"min3": "😀a"}, false},
+		{"combining-2cp-min2", map[string]any{"min2": "e\u0301"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			errs := s.Validate(c.data)
+			if got := len(errs) == 0; got != c.valid {
+				t.Fatalf("valid=%v, want %v (errors: %v)", got, c.valid, errs)
+			}
+		})
+	}
+}

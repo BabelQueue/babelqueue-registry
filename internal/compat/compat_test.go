@@ -62,8 +62,37 @@ func TestCheck_AdditionalPropertiesTightenedIsBreaking(t *testing.T) {
 func TestCheck_RemovedPropertyUnderClosedIsBreaking(t *testing.T) {
 	old := parse(t, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"additionalProperties":false}`)
 	neu := parse(t, `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`)
-	if breaks := Check(old, neu); len(breaks) == 0 {
-		t.Fatal("removing a property while additionalProperties is false must be breaking")
+	breaks := Check(old, neu)
+	if len(breaks) != 1 || breaks[0] != "b: property removed" {
+		t.Fatalf("removing a property while additionalProperties is false must be breaking, got %v", breaks)
+	}
+}
+
+func TestCheck_RemovedPropertyUnderOpenIsBreaking(t *testing.T) {
+	// additionalProperties absent (open) and explicitly true must both flag a removal.
+	for _, ap := range []string{``, `,"additionalProperties":true`} {
+		old := parse(t, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}}`+ap+`}`)
+		neu := parse(t, `{"type":"object","properties":{"a":{"type":"string"}}`+ap+`}`)
+		breaks := Check(old, neu)
+		if len(breaks) != 1 || breaks[0] != "b: property removed" {
+			t.Fatalf("removing a property from an open schema (%q) must be breaking, got %v", ap, breaks)
+		}
+	}
+}
+
+func TestCheck_NestedRemovedPropertyIsBreakingWithPath(t *testing.T) {
+	old := parse(t, `{"type":"object","properties":{"customer":{"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}}}}}`)
+	neu := parse(t, `{"type":"object","properties":{"customer":{"type":"object","properties":{"id":{"type":"integer"}}}}}`)
+	breaks := Check(old, neu)
+	if len(breaks) != 1 || breaks[0] != "customer.email: property removed" {
+		t.Fatalf("a nested removal must be reported with its path, got %v", breaks)
+	}
+
+	oldArr := parse(t, `{"type":"object","properties":{"lines":{"type":"array","items":{"type":"object","properties":{"sku":{"type":"string"},"qty":{"type":"integer"}}}}}}`)
+	neuArr := parse(t, `{"type":"object","properties":{"lines":{"type":"array","items":{"type":"object","properties":{"sku":{"type":"string"}}}}}}`)
+	breaks = Check(oldArr, neuArr)
+	if len(breaks) != 1 || breaks[0] != "lines[].qty: property removed" {
+		t.Fatalf("a removal inside array items must be reported with its path, got %v", breaks)
 	}
 }
 

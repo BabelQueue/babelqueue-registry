@@ -37,6 +37,13 @@ func TestRunCompat(t *testing.T) {
 		t.Fatalf("breaking change should exit 1, got %d", code)
 	}
 
+	// Field removed from an open schema → breaking (exit 1), same code as other breaks.
+	write(t, old, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}}}`)
+	write(t, neu, `{"type":"object","properties":{"a":{"type":"string"}}}`)
+	if code := runCompat([]string{old, neu}); code != 1 {
+		t.Fatalf("removing a field from an open schema should exit 1, got %d", code)
+	}
+
 	// Wrong arg count → usage error (exit 2).
 	if code := runCompat([]string{old}); code != 2 {
 		t.Fatalf("missing arg should exit 2, got %d", code)

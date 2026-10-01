@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"unicode/utf8"
 )
 
 // Schema is a parsed (subset) JSON Schema node.
@@ -171,7 +172,7 @@ func (s *Schema) validate(path string, value any, errs *[]string) {
 			*errs = append(*errs, at("must be a string"))
 			return
 		}
-		if s.MinLength != nil && len(str) < *s.MinLength {
+		if s.MinLength != nil && utf8.RuneCountInString(str) < *s.MinLength {
 			*errs = append(*errs, at(fmt.Sprintf("must be at least %d characters", *s.MinLength)))
 		}
 	case "integer":

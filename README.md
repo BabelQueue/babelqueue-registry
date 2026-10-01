@@ -289,10 +289,16 @@ the step and blocks the merge.
 | Add an **optional** field | compatible |
 | Make an optional field **required** | **breaking** |
 | Add a new **required** field | **breaking** |
-| Remove / rename / retype a field | **breaking** |
+| Remove / rename / retype a field — **regardless of `additionalProperties`**, at any depth | **breaking** |
 | Tighten `additionalProperties` `true → false` | **breaking** |
 | Drop an `enum` value / add an enum where any value was allowed | **breaking** |
-| Widen an `enum`, relax a constraint, drop a required field | compatible |
+| Widen an `enum`, relax a constraint, remove a field from `required` (keeping it in `properties`) | compatible |
+
+A removed field is reported with its path (`customer.email: property removed`,
+`lines[].qty: property removed`). An open schema would still *accept* the old field, but
+it is no longer governed — so since v0.4.1 a removal is breaking even when
+`additionalProperties` is `true` or absent (earlier versions only caught it under
+`additionalProperties: false`).
 
 A non-empty `compat` result is the signal to **version the URN, not mutate it**
 ("consumers upgrade before producers").
@@ -310,6 +316,7 @@ A non-empty `compat` result is the signal to **version the URN, not mutate it**
 - **Subset of JSON Schema draft-07**, by design: `type`, `required`, `properties`,
   `additionalProperties`, `items`, `enum`, `const`, `minLength`, `minimum`. Enough for real
   `data` shapes, mirroring php-sdk's envelope validator subset. Unknown keywords are ignored.
+  `minLength` counts Unicode code points (not bytes), like every SDK's payload validator.
 - **Zero dependencies** (Go stdlib only), in the spirit of BabelQueue's GR-7.
 - **Optional and SDK-independent** — no BabelQueue SDK depends on this; adopt it if you want
   the governance gate. The envelope is untouched (`schema_version: 1`).

@@ -58,7 +58,7 @@ func compare(path string, old, new *schema.Schema, breaks *[]string) {
 		*breaks = append(*breaks, at("minimum tightened"))
 	}
 
-	// Object: newly-required fields and a closed door reject old data.
+	// Object: newly-required fields, removed fields and a closed door are breaking.
 	oldReq := toSet(old.Required)
 	for _, f := range new.Required {
 		if _, was := oldReq[f]; !was {
@@ -71,9 +71,10 @@ func compare(path string, old, new *schema.Schema, breaks *[]string) {
 	for name, oldP := range old.Properties {
 		newP, ok := new.Properties[name]
 		if !ok {
-			if isClosed(new.AdditionalProperties) {
-				*breaks = append(*breaks, at(fmt.Sprintf("property %q removed while additionalProperties is false", name)))
-			}
+			// A removal is breaking whatever additionalProperties says (versioning-policy.md
+			// §3): an open schema would still accept the old field, but its type and meaning
+			// are no longer governed, so producers on `old` silently lose the contract.
+			*breaks = append(*breaks, fmt.Sprintf("%s: property removed", join(path, name)))
 			continue
 		}
 		compare(join(path, name), oldP, newP, breaks)
