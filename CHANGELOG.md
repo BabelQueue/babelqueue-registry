@@ -4,7 +4,7 @@ All notable changes to `babelqueue-registry` (`bqschema`) are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.4.1] — Unreleased
+## [0.4.1] — 2026-10-03
 
 ### Fixed
 
