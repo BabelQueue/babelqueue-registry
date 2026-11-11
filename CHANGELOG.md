@@ -4,6 +4,38 @@ All notable changes to `babelqueue-registry` (`bqschema`) are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Target: **v0.5.0** — validator parity with the SDKs (ADR-0024, conformance 1.10.0
+`payload_schema_keywords`, 66/66).
+
+### Added
+
+- **`maxLength`** (counted in Unicode code points, like `minLength`; a fractional value truncates to
+  an int).
+- **Union `type`** (`"type": ["string","null"]`): a value is valid when it matches any listed type.
+  `integer` now accepts every number with no fractional part (`1.0`, `1e2`).
+- **Unsupported-keyword warnings.** `schema.Parse` records one `{pointer, keyword}` warning per
+  occurrence of a keyword outside the supported subset (`Schema.Warnings()`); `bqschema validate`
+  prints them to **stderr**, once per URN. Verdicts and exit codes are unchanged. Annotation keywords
+  and `x-*` (incl. `x-gdpr-sensitive`) never warn.
+- Conformance `payload_schema_keywords` / `payload_schema` / `payload_schema_unicode` tests, run from a
+  vendored extract in `internal/schema/testdata/conformance/`.
+
+### Changed
+
+- **Heads-up — validation is stricter for schemas already in your registry.** In v0.4.x `maxLength`
+  and an array-form `type` (`"type": ["string","null"]`) were silently ignored; they are now
+  enforced. Data that passed `bqschema validate` under 0.4.x may fail (exit `1`), and `compat` may
+  report `type changed` on schemas that previously looked unconstrained. Re-run `validate` against
+  your fixtures before upgrading.
+- **`const` / `enum` compare numbers by mathematical value** (`1` = `1.0` = `1e0`, recursively inside
+  arrays and objects; key order irrelevant); a boolean never equals a number.
+- **`compat` understands union `type`**: removing a type from a union is breaking, adding one is not
+  (a single type is the one-element case, so existing single-type results are unchanged).
+- **`compat` flags a tightened `maxLength`** (lowered, or added where none existed) as breaking, now
+  that it is enforced. **Heads-up:** a pipeline that lowered `maxLength` and passed before will fail.
+
 ## [0.4.1] — 2026-10-03
 
 ### Fixed

@@ -29,7 +29,8 @@ Usage:
   bqschema serve    --registry <registry.json> [--addr :8081]      serve a Confluent-compatible (read-mostly) REST API over the registry
   bqschema gdpr     --registry <registry.json> [--require] [--mask m.json] audit x-gdpr-sensitive fields (and mask a message)
 
-Schemas are draft-07 JSON Schema (subset) for the envelope's "data" block.`
+Schemas are draft-07 JSON Schema (subset) for the envelope's "data" block. Keywords outside the
+subset are ignored by validation; "validate" warns about them on stderr.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -70,6 +71,7 @@ func runValidate(args []string) int {
 	}
 
 	failed := false
+	warned := map[string]bool{} // URNs whose unsupported-keyword warnings were already printed
 	for _, file := range fs.Args() {
 		raw, err := os.ReadFile(file)
 		if err != nil {
@@ -94,6 +96,15 @@ func runValidate(args []string) int {
 		if !ok {
 			fmt.Printf("%s [%s]: no schema registered — skipped\n", file, urn)
 			continue
+		}
+		// Keywords outside the supported subset are ignored by validation (they never change a
+		// verdict); say so on stderr, once per URN, so an unenforced constraint is never a
+		// surprise. Warnings never affect the exit code.
+		if !warned[urn] {
+			warned[urn] = true
+			for _, w := range s.Warnings() {
+				fmt.Fprintf(os.Stderr, "bqschema: warning: [%s] %s\n", urn, w)
+			}
 		}
 		errs := s.Validate(env["data"])
 		if len(errs) == 0 {

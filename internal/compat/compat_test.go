@@ -133,3 +133,65 @@ func TestCheck_EnumAddedWhereAnyAllowedIsBreaking(t *testing.T) {
 		t.Fatal("adding an enum where any value was allowed must be breaking")
 	}
 }
+
+func TestCheck_UnionTypeAddingIsCompatible(t *testing.T) {
+	old := parse(t, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":["string","null"]}}}`)
+	neu := parse(t, `{"type":"object","properties":{"a":{"type":["string","null"]},"b":{"type":["string","null","integer"]}}}`)
+	if breaks := Check(old, neu); len(breaks) != 0 {
+		t.Fatalf("adding a type to a union must be compatible, got %v", breaks)
+	}
+}
+
+func TestCheck_UnionTypeRemovalIsBreaking(t *testing.T) {
+	old := parse(t, `{"type":"object","properties":{"a":{"type":["string","null"]},"b":{"type":["string","integer"]}}}`)
+	neu := parse(t, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":["integer","boolean"]}}}`)
+	breaks := Check(old, neu)
+	if len(breaks) != 2 {
+		t.Fatalf("removing a type from a union must be breaking for both properties, got %v", breaks)
+	}
+	want := map[string]bool{
+		`a: type changed ["string","null"] → "string"`:                 true,
+		`b: type changed ["string","integer"] → ["integer","boolean"]`: true,
+	}
+	for _, b := range breaks {
+		if !want[b] {
+			t.Fatalf("unexpected break %q (all: %v)", b, breaks)
+		}
+	}
+}
+
+func TestCheck_UnionIsOrderInsensitiveAndDescends(t *testing.T) {
+	old := parse(t, `{"type":["object","null"],"properties":{"a":{"type":"string"}}}`)
+	same := parse(t, `{"type":["null","object"],"properties":{"a":{"type":"string"}}}`)
+	if breaks := Check(old, same); len(breaks) != 0 {
+		t.Fatalf("reordering a union must be compatible, got %v", breaks)
+	}
+	nested := parse(t, `{"type":["null","object"],"properties":{"a":{"type":"integer"}}}`)
+	if breaks := Check(old, nested); len(breaks) != 1 || breaks[0] != `a: type changed "string" → "integer"` {
+		t.Fatalf("a nested retype under a union must still be reported, got %v", breaks)
+	}
+}
+
+func TestCheck_MaxLengthTightenedIsBreaking(t *testing.T) {
+	old := parse(t, `{"type":"object","properties":{"s":{"type":"string","maxLength":10}}}`)
+	if breaks := Check(old, parse(t, `{"type":"object","properties":{"s":{"type":"string","maxLength":5}}}`)); len(breaks) != 1 {
+		t.Fatalf("lowering maxLength must be breaking, got %v", breaks)
+	}
+	if breaks := Check(old, parse(t, `{"type":"object","properties":{"s":{"type":"string","maxLength":20}}}`)); len(breaks) != 0 {
+		t.Fatalf("raising maxLength must be compatible, got %v", breaks)
+	}
+	free := parse(t, `{"type":"object","properties":{"s":{"type":"string"}}}`)
+	if breaks := Check(free, old); len(breaks) != 1 {
+		t.Fatalf("adding maxLength where none existed must be breaking, got %v", breaks)
+	}
+}
+
+func TestCheck_UnknownTypeNamesConstrainNothing(t *testing.T) {
+	// "strng" is not a JSON Schema type, so validation ignores it: both schemas accept exactly
+	// the strings, and the lint must agree with the validator.
+	old := parse(t, `{"type":"object","properties":{"a":{"type":["string","strng"]}}}`)
+	neu := parse(t, `{"type":"object","properties":{"a":{"type":"string"}}}`)
+	if breaks := Check(old, neu); len(breaks) != 0 {
+		t.Fatalf("an unknown type name must not count as an accepted type, got %v", breaks)
+	}
+}

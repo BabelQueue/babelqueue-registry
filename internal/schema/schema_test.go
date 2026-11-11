@@ -1,6 +1,10 @@
 package schema
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
 
 func parse(t *testing.T, src string) *Schema {
 	t.Helper()
@@ -217,5 +221,148 @@ func TestValidate_MinLengthCountsCodePoints(t *testing.T) {
 				t.Fatalf("valid=%v, want %v (errors: %v)", got, c.valid, errs)
 			}
 		})
+	}
+}
+
+func TestValidate_UnionTypeAndIntegerFraction(t *testing.T) {
+	s := parse(t, `{"type":"object","properties":{"v":{"type":["string","null"]},"n":{"type":["integer","boolean"]}}}`)
+	for _, ok := range []map[string]any{{"v": "x"}, {"v": nil}, {"n": 1.0}, {"n": true}} {
+		if errs := s.Validate(ok); len(errs) != 0 {
+			t.Fatalf("%v should be valid, got %v", ok, errs)
+		}
+	}
+	for _, bad := range []map[string]any{{"v": 1.0}, {"n": 1.5}, {"n": "1"}} {
+		if errs := s.Validate(bad); len(errs) == 0 {
+			t.Fatalf("%v should be invalid", bad)
+		}
+	}
+}
+
+func TestValidate_ConstEnumNumericEqualityAndBoolNotNumber(t *testing.T) {
+	s := parse(t, `{"type":"object","properties":{"c":{"const":1},"e":{"enum":[[1,{"a":2.5}],"x"]}}}`)
+	var ok map[string]any
+	if err := json.Unmarshal([]byte(`{"c":1.0,"e":[1e0,{"a":2.50}]}`), &ok); err != nil {
+		t.Fatal(err)
+	}
+	if errs := s.Validate(ok); len(errs) != 0 {
+		t.Fatalf("numeric equality must hold (also nested), got %v", errs)
+	}
+	if errs := s.Validate(map[string]any{"c": true}); len(errs) == 0 {
+		t.Fatal("true must not equal const 1")
+	}
+}
+
+func TestValidate_MaxLengthCountsCodePoints(t *testing.T) {
+	s := parse(t, `{"type":"object","properties":{"s":{"type":"string","maxLength":2}}}`)
+	if errs := s.Validate(map[string]any{"s": "ğü"}); len(errs) != 0 {
+		t.Fatalf("2 code points (4 bytes) must satisfy maxLength 2, got %v", errs)
+	}
+	if errs := s.Validate(map[string]any{"s": "ğüş"}); len(errs) == 0 {
+		t.Fatal("3 code points must violate maxLength 2")
+	}
+}
+
+func TestParse_UnsupportedKeywordWarnings(t *testing.T) {
+	s := parse(t, `{"$schema":"x","title":"t","x-gdpr-sensitive":true,"pattern":"^a",
+		"properties":{"a/b":{"format":"email","x-foo":1}},"items":{"oneOf":[]}}`)
+	got := map[Warning]bool{}
+	for _, w := range s.Warnings() {
+		got[w] = true
+	}
+	want := map[Warning]bool{
+		{Pointer: "", Keyword: "pattern"}:                true,
+		{Pointer: "/properties/a~1b", Keyword: "format"}: true,
+		{Pointer: "/items", Keyword: "oneOf"}:            true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("warnings: got %v, want %v", got, want)
+	}
+	for w := range want {
+		if !got[w] {
+			t.Fatalf("missing warning %v in %v", w, got)
+		}
+	}
+	// A warning never changes the verdict.
+	if errs := s.Validate(map[string]any{"a/b": "not-an-email"}); len(errs) != 0 {
+		t.Fatalf("unsupported keywords must not affect validity, got %v", errs)
+	}
+}
+
+func TestValidate_NumericEqualityAcrossNumberTypes(t *testing.T) {
+	c := parse(t, `{"const":1}`)
+	for _, v := range []any{1.0, 1, int8(1), int64(1), uint(1), uint64(1), float32(1), json.Number("1"), json.Number("1.0"), json.Number("1e0")} {
+		if errs := c.Validate(v); len(errs) != 0 {
+			t.Errorf("const 1 should accept %T(%v): %v", v, v, errs)
+		}
+	}
+	for _, v := range []any{true, "1", nil, 1.5, json.Number("1.5"), math.NaN(), math.Inf(1)} {
+		if errs := c.Validate(v); len(errs) == 0 {
+			t.Errorf("const 1 must reject %T(%v)", v, v)
+		}
+	}
+	if errs := parse(t, `{"const":2.5}`).Validate(json.Number("2.50")); len(errs) != 0 {
+		t.Errorf("2.5 equals 2.50: %v", errs)
+	}
+	if errs := parse(t, `{"const":true}`).Validate(1); len(errs) == 0 {
+		t.Error("true is not 1")
+	}
+}
+
+func TestValidate_NonFiniteFloatsNeverPanicOrMatch(t *testing.T) {
+	nonFinite := []any{
+		math.NaN(), math.Inf(1), math.Inf(-1),
+		float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)),
+	}
+	schemas := []string{`{"const":1}`, `{"enum":[1,2.5]}`, `{"type":"number"}`, `{"type":"integer"}`, `{"type":["integer","null"],"minimum":0}`}
+	for _, src := range schemas {
+		s := parse(t, src)
+		for _, v := range nonFinite {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s with %T(%v) panicked: %v", src, v, v, r)
+					}
+				}()
+				if errs := s.Validate(v); len(errs) == 0 {
+					t.Errorf("%s must reject non-finite %T(%v)", src, v, v)
+				}
+			}()
+		}
+	}
+	// A non-finite value is never equal to anything, including itself.
+	if jsonEqual(math.NaN(), math.NaN()) || jsonEqual(float32(math.Inf(1)), float32(math.Inf(1))) {
+		t.Error("non-finite values are not JSON numbers and never compare equal")
+	}
+}
+
+func TestValidate_NonFiniteLengthBoundsAreIgnored(t *testing.T) {
+	// NaN / Inf cannot come from JSON; a hand-built map can carry them, and they must not
+	// change a verdict (int(NaN) is implementation-defined and would otherwise reject "a").
+	for _, keyword := range []string{"minLength", "maxLength"} {
+		for _, bound := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			s := fromMap(map[string]any{"type": "string", keyword: bound})
+			for _, v := range []string{"", "a", "abc"} {
+				if errs := s.Validate(v); len(errs) != 0 {
+					t.Errorf("%s=%v must be ignored, %q gave %v", keyword, bound, v, errs)
+				}
+			}
+		}
+	}
+}
+
+func TestValidate_FractionalLengthBoundsTruncateTowardZero(t *testing.T) {
+	min := parse(t, `{"type":"string","minLength":2.5}`)
+	if errs := min.Validate("ab"); len(errs) != 0 {
+		t.Errorf("minLength 2.5 behaves as 2: %v", errs)
+	}
+	if errs := min.Validate("a"); len(errs) == 0 {
+		t.Error("a is below minLength 2")
+	}
+	max := parse(t, `{"type":"string","maxLength":-0.5}`)
+	if errs := max.Validate(""); len(errs) != 0 {
+		t.Errorf("maxLength -0.5 behaves as 0: %v", errs)
+	}
+	if errs := max.Validate("a"); len(errs) == 0 {
+		t.Error("a exceeds maxLength 0")
 	}
 }

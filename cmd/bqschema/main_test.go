@@ -314,3 +314,60 @@ func TestRunGDPR_MaskErrors(t *testing.T) {
 		t.Fatalf("mask against an unregistered URN should exit 1, got %d", code)
 	}
 }
+
+// captureStderr runs fn with os.Stderr redirected and returns what was written to it.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	_ = w.Close()
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		sb.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	return sb.String()
+}
+
+func TestRunValidateWarnsOnUnsupportedKeywordsToStderr(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "schemas/o.json"), `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object",
+		"required":["code"],"properties":{"code":{"type":"string","pattern":"^[A-Z]+$","x-gdpr-sensitive":true}}}`)
+	reg := filepath.Join(dir, "registry.json")
+	write(t, reg, `{"schemas":[{"urn":"urn:babel:orders:created","schema":"schemas/o.json"}]}`)
+
+	good := filepath.Join(dir, "good.json")
+	write(t, good, `{"job":"urn:babel:orders:created","data":{"code":"abc"}}`)
+	good2 := filepath.Join(dir, "good2.json")
+	write(t, good2, `{"job":"urn:babel:orders:created","data":{"code":"ABC"}}`)
+
+	var code int
+	out := captureStderr(t, func() { code = runValidate([]string{"--registry", reg, good, good2}) })
+	if code != 0 {
+		t.Fatalf("an unsupported keyword must not change the exit code (valid data → 0), got %d", code)
+	}
+	if n := strings.Count(out, `unsupported keyword "pattern" at "/properties/code"`); n != 1 {
+		t.Fatalf("want exactly one pattern warning on stderr (once per URN), got %d in %q", n, out)
+	}
+	if strings.Contains(out, "x-gdpr-sensitive") || strings.Contains(out, "$schema") {
+		t.Fatalf("annotation/extension keywords must not warn, got %q", out)
+	}
+
+	// Invalid data still exits 1 and the warning is still emitted.
+	bad := filepath.Join(dir, "bad.json")
+	write(t, bad, `{"job":"urn:babel:orders:created","data":{}}`)
+	out = captureStderr(t, func() { code = runValidate([]string{"--registry", reg, bad}) })
+	if code != 1 || !strings.Contains(out, `"pattern"`) {
+		t.Fatalf("invalid data should exit 1 with the warning on stderr, got code %d stderr %q", code, out)
+	}
+}
