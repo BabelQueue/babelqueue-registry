@@ -313,10 +313,22 @@ A non-empty `compat` result is the signal to **version the URN, not mutate it**
 
 ## Scope & limits (honest list)
 
-- **Subset of JSON Schema draft-07**, by design: `type`, `required`, `properties`,
-  `additionalProperties`, `items`, `enum`, `const`, `minLength`, `minimum`. Enough for real
-  `data` shapes, mirroring php-sdk's envelope validator subset. Unknown keywords are ignored.
-  `minLength` counts Unicode code points (not bytes), like every SDK's payload validator.
+- **Subset of JSON Schema draft-07**, by design: `type` (a single type or a union array such as
+  `["string","null"]`), `required`, `properties`, `additionalProperties`, `items`, `enum`, `const`,
+  `minLength`, `maxLength`, `minimum`. Enough for real `data` shapes, and the same subset — with the
+  same verdicts — as every SDK's optional payload validator (ADR-0024, checked against the
+  conformance `payload_schema_keywords` cases):
+  - `integer` accepts any number with no fractional part (`1.0` and `1e2` are integers, `1.5` is not).
+  - `const` / `enum` compare numbers by value (`1` = `1.0` = `1e0`, also inside arrays and objects);
+    `true` is never `1`.
+  - `minLength` / `maxLength` count Unicode code points (not bytes), like every SDK.
+  - **Unsupported keywords never change a verdict** (they are evaluated as if absent), but
+    `bqschema validate` prints one warning per occurrence to **stderr** —
+    `bqschema: warning: [<urn>] schema: unsupported keyword "pattern" at "/properties/code" is ignored` —
+    once per URN, without changing the exit code. Annotation keywords (`$schema`, `$id`, `title`,
+    `description`, `examples`, `default`, `$comment`) and every `x-*` extension (including
+    `x-gdpr-sensitive`) never warn.
+  - `compat` treats a `type` union as a set: removing a type is breaking, adding one is not.
 - **Zero dependencies** (Go stdlib only), in the spirit of BabelQueue's GR-7.
 - **Optional and SDK-independent** — no BabelQueue SDK depends on this; adopt it if you want
   the governance gate. The envelope is untouched (`schema_version: 1`).

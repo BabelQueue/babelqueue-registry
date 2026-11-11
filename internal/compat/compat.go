@@ -8,6 +8,7 @@ package compat
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/babelqueue/babelqueue-registry/internal/schema"
 )
@@ -33,10 +34,17 @@ func compare(path string, old, new *schema.Schema, breaks *[]string) {
 		return path + ": " + msg
 	}
 
-	// A retype invalidates everything beneath it; report and stop descending.
-	if old.Type != "" && new.Type != "" && old.Type != new.Type {
-		*breaks = append(*breaks, at(fmt.Sprintf("type changed %q → %q", old.Type, new.Type)))
-		return
+	// A narrowed or changed type invalidates everything beneath it; report and stop
+	// descending. `type` may be a union (an array): removing a type from the accepted set is
+	// breaking, adding one is not (data valid under the old set stays valid). A single type
+	// that differs from the old one is the degenerate case — the old type is no longer accepted.
+	if oldTypes, newTypes := typeSet(old), typeSet(new); len(oldTypes) > 0 && len(newTypes) > 0 {
+		for _, t := range oldTypes {
+			if !contains(newTypes, t) {
+				*breaks = append(*breaks, at(fmt.Sprintf("type changed %s → %s", formatTypes(oldTypes), formatTypes(newTypes))))
+				return
+			}
+		}
 	}
 
 	// Narrowing a previously-unconstrained value, or dropping allowed enum values, rejects
@@ -53,6 +61,9 @@ func compare(path string, old, new *schema.Schema, breaks *[]string) {
 	}
 	if tightenedInt(old.MinLength, new.MinLength) {
 		*breaks = append(*breaks, at("minLength tightened"))
+	}
+	if tightenedMax(old.MaxLength, new.MaxLength) {
+		*breaks = append(*breaks, at("maxLength tightened"))
 	}
 	if tightenedFloat(old.Minimum, new.Minimum) {
 		*breaks = append(*breaks, at("minimum tightened"))
@@ -110,6 +121,42 @@ func tightenedInt(old, new *int) bool {
 		return false
 	}
 	return old == nil || *new > *old
+}
+
+// tightenedMax reports whether an upper bound became stricter: newly added, or lowered.
+func tightenedMax(old, new *int) bool {
+	if new == nil {
+		return false
+	}
+	return old == nil || *new < *old
+}
+
+// typeSet returns the types a schema node accepts — the same set validation enforces (the
+// single "type", or every entry of a "type" union, restricted to the seven JSON Schema types).
+// An empty result means the node does not constrain the type.
+func typeSet(s *schema.Schema) []string {
+	return s.KnownTypes()
+}
+
+func contains(set []string, t string) bool {
+	for _, v := range set {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
+// formatTypes renders a single type as "string" and a union as ["string","null"].
+func formatTypes(types []string) string {
+	if len(types) == 1 {
+		return fmt.Sprintf("%q", types[0])
+	}
+	quoted := make([]string, len(types))
+	for i, t := range types {
+		quoted[i] = fmt.Sprintf("%q", t)
+	}
+	return "[" + strings.Join(quoted, ",") + "]"
 }
 
 func tightenedFloat(old, new *float64) bool {
