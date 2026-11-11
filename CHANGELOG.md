@@ -6,7 +6,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Target: **v0.5.0** — validator parity with the SDKs (ADR-0024, conformance 1.10.0
+## [0.5.0] — 2026-11-11
+
+Validator parity with the SDKs (ADR-0024, conformance 1.10.0
 `payload_schema_keywords`, 66/66).
 
 ### Added
